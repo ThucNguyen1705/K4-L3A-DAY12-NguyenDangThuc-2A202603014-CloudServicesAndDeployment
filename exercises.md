@@ -83,12 +83,31 @@ docker images | grep agent
 
 | Bản | Dung lượng |
 |-----|-----------|
-| 1 stage (bản đầu) | ... MB |
-| Multi-stage | ... MB |
+| 1 stage (bản đầu) | 1190 MB (`1.19GB`) |
+| Multi-stage | 184 MB |
 
-Giải thích: phần dung lượng chênh lệch đó là những gì?
+Máy tôi không có Docker nên tôi đo trên runner sạch của GitHub Actions (job
+`build` trong `.github/workflows/ci.yml`), bằng lệnh `docker images`. Kết quả
+annotation của lần chạy
+[#36439610242](https://github.com/ThucNguyen1705/K4-L3A-DAY12-NguyenDangThuc-2A202603014-CloudServicesAndDeployment/actions/runs/36439610242):
+`day12-agent:single 1.19GB; day12-agent:ci 184MB; python:3.11-slim 125MB`.
 
-> *Câu trả lời của bạn*
+Giải thích: bản multi-stage nhỏ hơn khoảng **6,5 lần**, chênh lệch hơn 1GB.
+
+- **Phần lớn nhất là base image.** Bản multi-stage = 125MB base `python:3.11-slim`
+  cộng khoảng 59MB thư viện và code. Vậy bản 1 stage có khoảng 1,1GB là base
+  `python:3.11` đầy đủ: bộ Debian gần như đầy đủ với `gcc`, `make`, header
+  `-dev`, `git`, `curl`, man pages… Đó là đồ nghề để **build**, lúc **chạy** app
+  không cần.
+- **pip cache:** bản 1 stage chạy `pip install` không có `--no-cache-dir`, nên
+  các file wheel đã tải về còn nằm lại trong `/root/.cache/pip` của image.
+- **Multi-stage giữ được gọn** vì stage `builder` cài thư viện vào `/install`,
+  còn stage `runtime` chỉ `COPY --from=builder /install /usr/local` cùng
+  `app/`, `utils/`. Mọi thứ khác của stage builder bị bỏ lại, không vào image
+  cuối.
+
+Image nhỏ nghĩa là deploy nhanh hơn: Render phải kéo image mỗi lần deploy. Nó
+cũng ít phần mềm hơn, tức ít CVE phải vá hơn.
 
 ---
 
@@ -98,7 +117,35 @@ Sửa một ký tự trong `app/main.py` rồi build lại. Với Dockerfile c�
 layer nào được dùng lại từ cache, layer nào phải chạy lại? Nếu bạn đặt
 `COPY . .` lên trước `RUN pip install` thì kết quả khác thế nào?
 
-> *Câu trả lời của bạn*
+Trong CI, tôi build image một lần, thêm một dòng comment vào cuối
+`app/main.py`, rồi build lại với `--progress=plain`. Kết quả thật:
+
+```
+CACHED [builder 2/4] WORKDIR /build
+CACHED [builder 3/4] COPY requirements.txt .
+CACHED [builder 4/4] RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+CACHED [runtime 2/6] WORKDIR /app
+CACHED [runtime 3/6] COPY --from=builder /install /usr/local
+CACHED [runtime 4/6] RUN useradd --create-home --uid 10001 appuser
+RUN    [runtime 5/6] COPY app ./app
+RUN    [runtime 6/6] COPY utils ./utils
+```
+
+(Dòng `FROM python:3.11-slim` cũng hiện là "chạy", nhưng đó chỉ là bước tra
+digest của base image, không tải hay build lại gì.)
+
+- **Dùng lại cache:** toàn bộ stage `builder`, gồm cả `pip install` là bước
+  chậm nhất, và các bước đầu của `runtime`. Lý do là `requirements.txt` không
+  đổi, nên checksum của layer không đổi.
+- **Chạy lại:** `COPY app` vì nội dung `app/main.py` đổi, và `COPY utils` vì
+  Docker hủy cache **từ layer đầu tiên thay đổi trở xuống**. Cả hai chỉ là copy
+  vài KB nên gần như tức thì.
+
+Nếu đặt `COPY . .` **trước** `RUN pip install`, layer `COPY . .` sẽ đổi mỗi khi
+sửa bất kỳ file nào. Mọi layer sau nó, gồm `pip install`, mất cache và phải
+tải lại toàn bộ fastapi, uvicorn, pydantic, redis… Mỗi lần sửa một dấu phẩy là
+mất thêm vài chục giây đến vài phút, và CI hay Render phải làm lại việc đó ở
+mỗi lần deploy.
 
 ---
 
@@ -218,7 +265,11 @@ Khi tách hai endpoint như tôi làm:
   (không restart). Khi Redis quay lại, `/ready` lên 200 và traffic vào lại ngay,
   không mất thời gian khởi động.
 
-*(Kết quả kiểm chứng trên CI: đang chờ lần chạy đầu tiên.)*
+**Kiểm chứng thật:** job `integration` trong CI dựng 3 agent + Nginx + Redis,
+rồi chạy `docker compose stop redis` và gọi qua Nginx. Kết quả annotation:
+`/health=200 /ready=503`. Nghĩa là liveness vẫn báo "sống" (không bị restart),
+còn readiness báo "đừng gửi traffic". Sau `docker compose start redis`, `/ready`
+trở lại 200 mà không container nào phải khởi động lại.
 
 ---
 
@@ -253,8 +304,19 @@ một container restart, phần lịch sử của nó mất hẳn.
 bất kể instance nào xử lý. Lý do là mọi instance cùng đọc/ghi key
 `history:sv01` trong Redis.
 
-*(Kết quả `docker compose up --scale agent=3` qua Nginx trên CI: đang chờ lần
-chạy đầu tiên.)*
+**(c) `--scale agent=3` thật, qua Nginx.** Trên runner của GitHub Actions
+(job `integration`), tôi chạy
+`docker compose -f docker-compose.yml -f docker-compose.lb.yml up --scale agent=3`
+rồi gửi 6 request cùng `X-User-Id: sv01` vào Nginx ở cổng 8080. Kết quả:
+
+```
+history_length = 0 2 4 6 8 10
+container xử lý: agent-2 agent-3 agent-1 agent-2 agent-3 agent-1
+```
+
+Nginx rải request qua **cả 3 container**, vậy mà `history_length` vẫn tăng đều
+0 → 10, vì lịch sử nằm ở Redis chứ không nằm trong RAM container nào. Nếu dùng
+dict Python, kết quả sẽ giống thí nghiệm (a): `0 0 0 2 2 2`.
 
 ---
 
