@@ -35,9 +35,10 @@ COPY --from=builder /install /usr/local
 
 RUN useradd --create-home --uid 10001 appuser
 
-# Source code copy SAU dependency; chỉ copy đúng thứ app cần
-COPY --chown=appuser:appuser app ./app
-COPY --chown=appuser:appuser utils ./utils
+# Source code copy SAU dependency; chỉ copy đúng thứ app cần.
+# Cố ý để file thuộc root: appuser chỉ cần đọc, không sửa được code của app.
+COPY app ./app
+COPY utils ./utils
 
 USER appuser
 

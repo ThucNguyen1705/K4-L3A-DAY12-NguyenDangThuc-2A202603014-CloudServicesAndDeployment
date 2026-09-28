@@ -66,6 +66,10 @@ jobs:
           user=$(docker run --rm --entrypoint id day12-agent:ci -un)
           echo "::notice title=User trong container::${user}"
           test "$user" != "root"
+          # appuser chỉ được đọc code, không được sửa
+          if docker run --rm --entrypoint sh day12-agent:ci -c 'touch /app/app/main.py'; then
+            echo "::error::appuser đang ghi được vào source code"; exit 1
+          fi
 
       - name: Chạy thử container, rồi tắt bằng SIGTERM
         run: |
