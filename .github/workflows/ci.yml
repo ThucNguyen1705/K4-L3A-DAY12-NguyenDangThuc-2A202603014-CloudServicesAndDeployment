@@ -1,0 +1,224 @@
+# CI/CD — mỗi lần push/PR: test → build image → chạy thử stack thật.
+# Chỉ khi cả ba xanh VÀ là push lên main thì mới deploy lên Render.
+#
+# Cấu hình cần có trên GitHub (Settings → Secrets and variables → Actions):
+#   Secret   RENDER_DEPLOY_HOOK_URL  — Render → service → Settings → Deploy Hook
+#   Variable PUBLIC_URL              — URL công khai của service, dùng cho smoke test
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (pytest CP1–CP4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cài dependency
+        run: pip install -r requirements.txt
+
+      # test_cp5 gọi vào bản deploy đang sống, test_bonus_cicd kiểm tra badge của
+      # chính workflow này → không chạy ở đây. Test build Docker do job `build` lo.
+      - name: Chạy pytest
+        env:
+          AGENT_API_KEY: ci-dummy
+          REDIS_URL: "fake://"
+        run: >
+          pytest tests/ -v -m "not docker"
+          --ignore=tests/test_cp5.py
+          --ignore=tests/test_bonus_cicd.py
+
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image multi-stage
+        run: docker build -t day12-agent:ci .
+
+      - name: Dung lượng image phải dưới 500MB
+        run: |
+          size=$(docker images day12-agent:ci --format '{{.Size}}')
+          mb=$(( $(docker image inspect day12-agent:ci --format '{{.Size}}') / 1000000 ))
+          echo "::notice title=Image multi-stage::docker images = ${size} (${mb} MB)"
+          test "$mb" -lt 500
+
+      - name: Container không chạy bằng root
+        run: |
+          user=$(docker run --rm --entrypoint id day12-agent:ci -un)
+          echo "::notice title=User trong container::${user}"
+          test "$user" != "root"
+
+      - name: Chạy thử container, rồi tắt bằng SIGTERM
+        run: |
+          docker run -d --name agent -p 8000:8000 \
+            -e AGENT_API_KEY=ci-dummy -e REDIS_URL=fake:// day12-agent:ci
+          for i in $(seq 1 30); do
+            curl -fsS --max-time 5 http://localhost:8000/health && break
+            sleep 1
+          done
+          echo
+          curl -fsS --max-time 5 http://localhost:8000/health
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST http://localhost:8000/ask \
+            -H 'Content-Type: application/json' -d '{"question":"hi"}')
+          test "$code" = "401"
+
+          # docker stop gửi SIGTERM, hết 20s mới SIGKILL (exit 137).
+          # 0 hoặc 143 (uvicorn phát lại SIGTERM sau khi tắt xong) đều là tắt êm.
+          start=$(date +%s)
+          docker stop -t 20 agent
+          took=$(( $(date +%s) - start ))
+          exit_code=$(docker inspect agent --format '{{.State.ExitCode}}')
+          docker logs agent
+          echo "::notice title=Graceful shutdown::docker stop mất ${took}s, exit code ${exit_code}"
+          test "$exit_code" != "137"
+          test "$took" -lt 20
+          docker logs agent 2>&1 | grep -q '"service_stopped"'
+
+      # Số liệu cho exercises câu 4: sửa 1 dòng code rồi build lại
+      - name: Layer nào dùng lại cache khi chỉ sửa code
+        run: |
+          echo "# cache probe" >> app/main.py
+          docker build --progress=plain -t day12-agent:rebuild . 2> rebuild.log
+          git checkout -- app/main.py
+          summary=$(awk '
+            /^#[0-9]+ \[(builder|runtime)/ { id=$1; if (!(id in name)) { sub(/^#[0-9]+ /, ""); name[id]=$0; order[++n]=id } }
+            /^#[0-9]+ CACHED/ { cached[$1]=1 }
+            END { for (i=1; i<=n; i++) printf "%s %s%%0A", (cached[order[i]] ? "CACHED" : "RUN   "), name[order[i]] }
+          ' rebuild.log)
+          echo "::notice title=Rebuild sau khi sửa app/main.py::${summary}"
+
+      # Số liệu cho exercises câu 3: Dockerfile 1 stage ban đầu của lab
+      - name: So sánh với Dockerfile 1 stage
+        run: |
+          cat > /tmp/Dockerfile.single <<'EOF'
+          FROM python:3.11
+          WORKDIR /app
+          COPY . .
+          RUN pip install -r requirements.txt
+          EXPOSE 8000
+          CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          EOF
+          docker build -q -f /tmp/Dockerfile.single -t day12-agent:single .
+          docker pull -q python:3.11-slim
+          docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' \
+            | grep -E 'day12-agent:(ci|single)|python:3.11-slim' | tee sizes.txt
+          echo "::notice title=So sánh dung lượng::$(paste -sd ';' sizes.txt)"
+
+  integration:
+    name: Integration (3 agent + Nginx + Redis thật)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AGENT_API_KEY: ci-dummy
+      COMPOSE_FILE: docker-compose.yml:docker-compose.lb.yml
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Dựng stack, scale agent=3
+        run: docker compose up -d --build --scale agent=3 --wait
+
+      # Số liệu cho exercises câu 9: cùng một user, request rải qua 3 container
+      - name: history_length qua load balancer
+        run: |
+          lengths=""
+          for i in 1 2 3 4 5 6; do
+            n=$(curl -fsS --max-time 30 -X POST http://localhost:8080/ask \
+              -H 'Content-Type: application/json' \
+              -H "X-API-Key: $AGENT_API_KEY" -H 'X-User-Id: sv01' \
+              -d "{\"question\":\"lượt $i\"}" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["history_length"])')
+            lengths="$lengths $n"
+          done
+          containers=$(docker compose logs --no-color agent | grep '"ask_completed"' \
+            | sort -t'"' -k12 | awk '{print $1}' | paste -sd ' ')
+          echo "::notice title=Stateless qua 3 container::history_length =${lengths} | container xử lý: ${containers}"
+          test "$(echo $lengths)" = "0 2 4 6 8 10"
+
+      # Số liệu cho exercises câu 8: Redis chết thì /health và /ready phản ứng khác nhau
+      - name: Tắt Redis — /health vẫn 200, /ready phải 503
+        run: |
+          docker compose stop redis
+          health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 http://localhost:8080/health)
+          ready=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 http://localhost:8080/ready)
+          echo "::notice title=Redis down::/health=${health} /ready=${ready}"
+          test "$health" = "200"
+          test "$ready" = "503"
+          docker compose start redis
+          for i in $(seq 1 20); do
+            curl -fsS --max-time 10 http://localhost:8080/ready && break
+            sleep 1
+          done
+          echo
+          curl -fsS --max-time 10 http://localhost:8080/ready
+
+      - name: Log khi có lỗi
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Dọn stack
+        if: always()
+        run: docker compose down -v
+
+  deploy:
+    name: Deploy lên Render
+    needs: [test, build, integration]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Gọi Render Deploy Hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::error title=Thiếu secret::Chưa đặt RENDER_DEPLOY_HOOK_URL trong Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo
+
+      - name: Smoke test bản deploy
+        env:
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+        run: |
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "::error title=Thiếu biến::Chưa đặt biến PUBLIC_URL trong Settings → Secrets and variables → Actions → Variables"
+            exit 1
+          fi
+          # Render cần vài phút để build; free tier còn có thể đang ngủ đông
+          sleep 90
+          for i in $(seq 1 20); do
+            curl -fsS --max-time 60 "$PUBLIC_URL/health" && break
+            sleep 15
+          done
+          echo
+          curl -fsS --max-time 60 "$PUBLIC_URL/health"
+          echo
+          curl -fsS --max-time 60 "$PUBLIC_URL/ready"
+          echo
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -X POST "$PUBLIC_URL/ask" \
+            -H 'Content-Type: application/json' -d '{"question":"hi"}')
+          echo "POST /ask không có key → $code"
+          test "$code" = "401"

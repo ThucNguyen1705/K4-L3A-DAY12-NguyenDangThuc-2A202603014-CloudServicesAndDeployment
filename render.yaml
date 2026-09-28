@@ -9,6 +9,8 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
+    # Web service và Redis phải cùng region thì mới nối được qua mạng nội bộ
+    region: singapore
     healthCheckPath: /health
     envVars:
       - key: AGENT_API_KEY
@@ -28,4 +30,5 @@ services:
   - type: redis
     name: day12-redis
     plan: free
+    region: singapore
     ipAllowList: []

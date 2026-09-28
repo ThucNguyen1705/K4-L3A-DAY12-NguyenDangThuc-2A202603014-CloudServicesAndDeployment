@@ -1,3 +1,8 @@
+![CI](https://github.com/ThucNguyen1705/K4-L3A-DAY12-NguyenDangThuc-2A202603014-CloudServicesAndDeployment/actions/workflows/ci.yml/badge.svg)
+
+> **Học viên:** Nguyễn Đăng Thực — **Mã học viên:** 2A202603014
+> Thông tin deploy: [DEPLOYMENT.md](DEPLOYMENT.md) · Phản ánh: [exercises.md](exercises.md)
+
 # K4 — Level 3A, Ngày 12: Hạ Tầng Cloud & Deployment (240 phút)
 
 Đưa một AI agent từ `localhost:8000` lên một địa chỉ công khai mà người khác

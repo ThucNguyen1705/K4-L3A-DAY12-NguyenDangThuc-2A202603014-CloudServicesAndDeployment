@@ -14,9 +14,9 @@
 #   [ ] depends_on: redis
 #   [ ] healthcheck gọi /health
 #
-# MỞ RỘNG TÙY CHỌN: thêm service `nginx` làm load balancer
+# MỞ RỘNG TÙY CHỌN: Nginx làm load balancer — khai báo trong docker-compose.lb.yml
 # (không phải bonus chấm điểm riêng; nginx/nginx.conf đã có sẵn)
-#     docker compose up --scale agent=3
+#     docker compose -f docker-compose.yml -f docker-compose.lb.yml up -d --scale agent=3
 #
 # Kiểm tra: pytest tests/test_cp2.py -v
 # ═══════════════════════════════════════════════════════════════════
