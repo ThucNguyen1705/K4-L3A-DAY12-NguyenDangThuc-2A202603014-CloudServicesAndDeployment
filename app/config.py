@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,9 +41,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # TODO (CP1): khai báo 6 trường theo bảng trên, ví dụ:
-    #     port: int = 8000
-    #     agent_api_key: str
+    port: int = 8000
+    # Secret: cố ý KHÔNG có mặc định — thiếu biến là Settings() ném ValidationError.
+    # min_length=1: biến tồn tại nhưng rỗng (AGENT_API_KEY=) cũng phải bị từ chối,
+    # nếu không một header X-API-Key rỗng sẽ khớp và qua được auth.
+    agent_api_key: str = Field(min_length=1)
+    redis_url: str = "redis://localhost:6379/0"
+    rate_limit_per_minute: int = 10
+    monthly_budget_usd: float = 10.0
+    log_level: str = "INFO"
 
 
 @lru_cache(maxsize=1)
