@@ -70,32 +70,61 @@ done; echo
 
 ## Kết Quả Chạy Thật
 
-Dán output của các lệnh trên vào đây:
+Chạy lúc 2026-09-28T15:48:54Z (UTC) từ máy tôi vào bản deploy trên Render
+(chỉ giữ dòng trạng thái, `Content-Type` và body; `$AGENT_API_KEY` đọc từ
+`.env`, không in ra):
 
 ```
-(điền output)
+$ curl -i https://day12-agent-u9bg.onrender.com/health
+HTTP/1.1 200 OK
+Content-Type: application/json
+{"status":"ok","service":"day12-agent","version":"1.0.0"}
+
+$ curl -i https://day12-agent-u9bg.onrender.com/ready
+HTTP/1.1 200 OK
+Content-Type: application/json
+{"status":"ready","redis":true}
+
+$ curl -i -X POST https://day12-agent-u9bg.onrender.com/ask -H "Content-Type: application/json" -d '{"question":"Hello"}'
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+{"detail":"invalid or missing API key"}
+
+$ curl -i -X POST https://day12-agent-u9bg.onrender.com/ask -H "Content-Type: application/json" \
+    -H "X-API-Key: $AGENT_API_KEY" -H "X-User-Id: sv-deploy" --data-binary @body.json   # body.json = {"question":"Deploy là gì?"}
+HTTP/1.1 200 OK
+Content-Type: application/json
+{"answer":"Câu hỏi hay. Deploy là gì thường được giải quyết bằng cách chuẩn hóa môi trường chạy: cùng một image chạy giống nhau ở laptop và trên cloud.","user_id":"sv-deploy","history_length":0,"cost_usd":2.145e-05,"tokens":{"in":3,"out":35}}
+
+$ for i in $(seq 1 15); do curl -s -o /dev/null -w "%{http_code} " ... /ask (X-User-Id: sv-test); done
+200 200 200 200 200 200 200 200 200 200 429 429 429 429 429
 ```
+
+Ghi chú: lần đầu tôi chạy lệnh 4 đúng như mẫu (`-d '{"question":"Deploy là gì?"}'`)
+trong Git Bash trên Windows và nhận `400 {"detail":"There was an error parsing the body"}`.
+Lỗi nằm ở phía client: tham số dòng lệnh trên Windows không giữ được UTF-8 nên
+chữ "là gì" tới server thành byte sai và JSON không hợp lệ. Gửi body từ file
+UTF-8 (`--data-binary @body.json`) thì trả 200. Tôi đổi sang `X-User-Id: sv-deploy`
+vì `sv-test` vừa dùng hết 10 request/phút ở lệnh 5.
+
+**CI/CD:** mỗi lần push lên `main`, GitHub Actions chạy test → build image →
+integration, rồi mới gọi Render Deploy Hook và smoke test lại `/health`,
+`/ready`, `/ask` (401). Lần chạy xanh đầu tiên đi hết cả 4 job:
+[run 36445911207](https://github.com/ThucNguyen1705/K4-L3A-DAY12-NguyenDangThuc-2A202603014-CloudServicesAndDeployment/actions/runs/36445911207).
 
 ## Ảnh Chụp Màn Hình
 
-Đặt ảnh trong thư mục `screenshots/`:
+- `screenshots/dashboard.png` — service `day12-agent` trên Render: Docker,
+  Blueprint managed, commit `b45fa9f` trạng thái **Live**, sự kiện "Deploy live"
 
-- `screenshots/dashboard.png` — trang quản lý service trên platform
-- `screenshots/health.png` — kết quả gọi `/health` từ trình duyệt hoặc curl
+  ![Render dashboard](screenshots/dashboard.png)
+
+- `screenshots/health.png` — `/health` của bản deploy mở bằng trình duyệt (Edge)
+
+  ![/health](screenshots/health.png)
 
 ---
 
-## Nếu Dùng Phương Án Dự Phòng
+## Phương Án Dự Phòng
 
-Không đăng ký được tài khoản cloud? Vẫn nộp được bài, nhưng CP5 tối đa 60% điểm:
-
-1. Đặt `LOCAL_FALLBACK=true` trong `.env`
-2. Chạy `docker compose up -d` rồi kiểm tra `docker compose ps`
-3. Chụp màn hình vào `screenshots/`
-4. Chạy `pytest tests/test_cp5.py -v` — bộ test sẽ tự chuyển sang kiểm tra
-   `http://localhost:8000`
-5. Ghi rõ lý do không deploy được vào phần dưới đây:
-
-```
-(điền lý do nếu dùng phương án dự phòng, ngược lại xóa mục này)
-```
+Không dùng — service chạy thật trên Render (`LOCAL_FALLBACK=false`).

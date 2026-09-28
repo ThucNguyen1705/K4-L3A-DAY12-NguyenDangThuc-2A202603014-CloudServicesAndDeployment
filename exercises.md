@@ -326,4 +326,49 @@ Ghi lại **một** lỗi bạn gặp khi deploy lên cloud (build fail, health 
 timeout, sai REDIS_URL, app không đọc `$PORT`...): thông báo lỗi là gì, bạn
 tìm ra nguyên nhân bằng cách nào, và sửa ra sao?
 
-> *Câu trả lời của bạn*
+**Lỗi:** deploy lần đầu trên Render (commit `b45fa9f`, ngày 2026-09-28) báo
+**Live**, `/health` trả 200 và `/ready` trả `200 {"status":"ready","redis":true}`.
+Nhưng gọi `/ask` bằng **đúng** khóa trong `.env`, cũng là khóa tôi đã dán vào ô
+`AGENT_API_KEY` khi tạo Blueprint, lại luôn nhận
+`401 {"detail":"invalid or missing API key"}`.
+
+**Tìm nguyên nhân:**
+
+1. `/health` và `/ready` đều 200, nên container, cổng `$PORT` và kết nối Redis
+   đều ổn. Vấn đề chỉ còn nằm ở cấu hình khóa.
+2. Khóa ở máy vẫn nguyên: 43 ký tự đúng dạng `token_urlsafe`, file `.env`
+   không bị sửa từ lúc tạo. Ở máy, cùng khóa đó gọi `/ask` trả 200.
+3. Tôi thử gửi các kiểu dán nhầm hay gặp: cả dòng `AGENT_API_KEY=<khóa>`, khóa
+   trong nháy kép hoặc nháy đơn, placeholder `doi-thanh-khoa-cua-rieng-ban` của
+   `.env.example`. Tất cả đều 401. Vậy giá trị trên Render không phải một chuỗi
+   "nhìn thấy được" nào trong số đó.
+4. Tôi dán lại khóa trên dashboard. Render deploy lại (log có
+   `service_started` lúc 22:42:58), nhưng request lúc 22:43:14 vẫn 401. Dán
+   tay lại vẫn lặp lại đúng lỗi cũ.
+5. Giả thuyết: khóa dính **ký tự trắng vô hình ở đầu hoặc cuối** (dấu cách hoặc
+   xuống dòng khi copy). Trên dashboard không nhìn thấy, và client không thể gửi
+   khớp, vì giá trị header HTTP bị cắt khoảng trắng hai đầu. Server so
+   `"<khóa>"` với `"<khóa>\n"` nên mãi mãi không bằng nhau.
+
+**Sửa:**
+
+- Trong `Settings`, thêm `field_validator` để `strip()` giá trị `AGENT_API_KEY`
+  **trước** khi kiểm tra `min_length=1`. Khóa chỉ toàn khoảng trắng vẫn bị từ
+  chối (fail fast).
+- Lúc khởi động, log thêm `api_key_length` và `api_key_fingerprint` (8 ký tự
+  đầu SHA-256). Lần sau khóa lệch, tôi so fingerprint trong log với khóa ở máy
+  là biết ngay, mà không phải để lộ khóa.
+- Deploy code mới qua CI: push → test/build/integration xanh → gọi Render
+  Deploy Hook. Lần push đầu (`656f37a`), Render **không** tự deploy commit mới:
+  log vẫn là dòng `service_started` kiểu cũ, còn CI đỏ vì tôi chưa thêm secret
+  `RENDER_DEPLOY_HOOK_URL`. Sau khi thêm secret, lần push `b28d3f9` đi hết 4 job
+  xanh, Render chạy code mới, và cùng khóa đó trả **200**. `pytest
+  tests/test_cp5.py` pass 9/9, gồm cả test gọi `/ask` với khóa thật.
+
+Tôi **không sửa gì thêm** trên dashboard giữa lần 401 cuối cùng (22:43) và lần
+deploy code mới. Vì vậy chính việc cắt khoảng trắng đã sửa được lỗi, xác nhận
+giả thuyết ở bước 5.
+
+**Bài học:** secret nhập tay vào dashboard phải được chuẩn hóa và kiểm tra lúc
+khởi động. Tách `/health` và `/ready` giúp khoanh vùng lỗi rất nhanh: hai
+endpoint đó xanh thì chỉ còn tầng cấu hình và ứng dụng.
