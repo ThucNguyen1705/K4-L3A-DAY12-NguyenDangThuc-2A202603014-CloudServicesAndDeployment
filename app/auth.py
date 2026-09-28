@@ -6,6 +6,7 @@ người lạ quyết định.
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 
 from fastapi import Header, HTTPException, status
@@ -13,6 +14,12 @@ from fastapi import Header, HTTPException, status
 from .config import get_settings
 
 ANONYMOUS_USER = "anonymous"
+
+
+def key_fingerprint(key: str) -> str:
+    """8 ký tự hex đầu của SHA-256 — đủ để so hai khóa có giống nhau không
+    (ví dụ khóa trên dashboard cloud với khóa ở máy) mà không để lộ khóa."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
 
 
 def verify_api_key(

@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from utils.mock_llm import ask_llm
 
-from .auth import verify_api_key
+from .auth import key_fingerprint, verify_api_key
 from .config import get_settings
 from .cost_guard import CostGuard
 from .lifecycle import lifecycle
@@ -58,7 +58,15 @@ def get_cost_guard() -> CostGuard:
 async def lifespan(_app: FastAPI):
     """CHO SẴN — chạy lúc app khởi động và lúc tắt."""
     lifecycle.install()
-    log_event("service_started", service=SERVICE_NAME, version=SERVICE_VERSION)
+    api_key = get_settings().agent_api_key
+    # Log dấu vân tay chứ không log khóa: so với khóa ở máy để biết dashboard có đặt đúng không
+    log_event(
+        "service_started",
+        service=SERVICE_NAME,
+        version=SERVICE_VERSION,
+        api_key_length=len(api_key),
+        api_key_fingerprint=key_fingerprint(api_key),
+    )
     yield
     log_event("service_stopped", service=SERVICE_NAME)
 

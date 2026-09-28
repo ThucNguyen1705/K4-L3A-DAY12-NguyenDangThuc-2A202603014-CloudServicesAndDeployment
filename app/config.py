@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 10
     monthly_budget_usd: float = 10.0
     log_level: str = "INFO"
+
+    @field_validator("agent_api_key", mode="before")
+    @classmethod
+    def _strip_secret(cls, value):
+        # Dán secret vào dashboard hay dính khoảng trắng/xuống dòng ở cuối. Header
+        # HTTP không mang được khoảng trắng hai đầu, nên khóa như vậy không bao giờ
+        # khớp. Cắt trước khi kiểm tra min_length → khóa chỉ toàn khoảng trắng vẫn bị từ chối.
+        return value.strip() if isinstance(value, str) else value
 
 
 @lru_cache(maxsize=1)
